@@ -29,12 +29,29 @@ contract RehypothecationLogic is YoloStorage {
     /**
      * @dev Convert claim-tokens to real ERC-20 USDC
      * @param amount Amount of USDC to pull as real tokens
+     * @param inUnlockContext True if already in unlock context (e.g., called from hooks)
      */
-    function _pullRealUSDC(uint256 amount) internal {
+    function _pullRealUSDC(uint256 amount, bool inUnlockContext) internal {
         if (amount == 0) return;
+
+        // NEW: Use local real USDC first to avoid double-settle
+        uint256 localBalance = IERC20(usdc).balanceOf(address(this));
+        if (localBalance >= amount) return;
+
+        uint256 needed = amount - localBalance;
+        Currency cUSDC = Currency.wrap(usdc);
         IPoolManager pm = IBaseHookView(address(this)).poolManager();
-        pm.unlock(abi.encode(CallbackData(3, abi.encode(amount))));
+
+        if (inUnlockContext) {
+            // We're already in an unlock context, perform operations directly
+            cUSDC.settle(pm, address(this), needed, true);
+            cUSDC.take(pm, address(this), needed, false);
+        } else {
+            // Not in unlock context, need to unlock first
+            pm.unlock(abi.encode(CallbackData(3, abi.encode(needed))));
+        }
     }
+
     // function _pullRealUSDC(uint256 amount) internal {
     //     if (amount == 0) return;
     //     Currency cUSDC = Currency.wrap(usdc);
@@ -50,12 +67,28 @@ contract RehypothecationLogic is YoloStorage {
     /**
      * @dev Deposit real ERC-20 USDC back to PM, receiving claim-tokens
      * @param amount Amount of real USDC to convert back to claim-tokens
+     * @param inUnlockContext True if already in unlock context (e.g., called from hooks)
      */
-    function _pushRealUSDC(uint256 amount) internal {
+    function _pushRealUSDC(uint256 amount, bool inUnlockContext) internal {
         if (amount == 0) return;
+
+        // NEW: Use local real USDC first to avoid double-settle
+        uint256 localBalance = IERC20(usdc).balanceOf(address(this));
+        if (localBalance == 0) return;
+
+        uint256 toPush = amount > localBalance ? localBalance : amount;
+        Currency cUSDC = Currency.wrap(usdc);
         IPoolManager pm = IBaseHookView(address(this)).poolManager();
-        pm.unlock(abi.encode(CallbackData(4, abi.encode(amount))));
+
+        if (inUnlockContext) {
+            // We're already in an unlock context, perform operations directly
+            cUSDC.settle(pm, address(this), toPush, false);
+        } else {
+            // Not in unlock context, need to unlock first
+            pm.unlock(abi.encode(CallbackData(4, abi.encode(toPush))));
+        }
     }
+
     // function _pushRealUSDC(uint256 amount) internal {
     //     if (amount == 0) return;
     //     Currency cUSDC = Currency.wrap(usdc);
@@ -67,16 +100,17 @@ contract RehypothecationLogic is YoloStorage {
     // }
 
     /**
-     * @notice  Function to buy USYC and track cost basis
-     * @param   _usdcAmount  Amount of USDC to spend
-     * @return  usycOut      Amount of USYC received
+     * @notice  Internal function to buy USYC with context awareness
+     * @param   _usdcAmount      Amount of USDC to spend
+     * @param   inUnlockContext  True if already in unlock context
+     * @return  usycOut          Amount of USYC received
      */
-    function buyUSYC(uint256 _usdcAmount) public returns (uint256 usycOut) {
-        // USDC leaves the pool ⇢ shrink the reserve first
-        totalAnchorReserveUSDC -= _usdcAmount;
+    function _buyUSYC(uint256 _usdcAmount, bool inUnlockContext) internal returns (uint256 usycOut) {
+        // Convert claim-tokens to real USDC for the Teller FIRST
+        _pullRealUSDC(_usdcAmount, inUnlockContext);
 
-        // Convert claim-tokens to real USDC for the Teller
-        _pullRealUSDC(_usdcAmount);
+        // Only update reserve after successful pull
+        totalAnchorReserveUSDC -= _usdcAmount;
 
         // Buy USYC with real USDC
         usycOut = usycTeller.buy(_usdcAmount);
@@ -91,11 +125,21 @@ contract RehypothecationLogic is YoloStorage {
     }
 
     /**
-     * @notice  Function to sell USYC and realize P&L
-     * @param   _usycAmount  Amount of USYC to sell
-     * @return  usdcOut      Amount of USDC received
+     * @notice  Function to buy USYC and track cost basis
+     * @param   _usdcAmount  Amount of USDC to spend
+     * @return  usycOut      Amount of USYC received
      */
-    function sellUSYC(uint256 _usycAmount) public returns (uint256 usdcOut) {
+    function buyUSYC(uint256 _usdcAmount) public returns (uint256 usycOut) {
+        return _buyUSYC(_usdcAmount, false);
+    }
+
+    /**
+     * @notice  Internal function to sell USYC with context awareness
+     * @param   _usycAmount      Amount of USYC to sell
+     * @param   inUnlockContext  True if already in unlock context
+     * @return  usdcOut          Amount of USDC received
+     */
+    function _sellUSYC(uint256 _usycAmount, bool inUnlockContext) internal returns (uint256 usdcOut) {
         require(_usycAmount <= usycQuantity, "Insufficient USYC");
 
         // Calculate proportional cost basis being closed
@@ -108,19 +152,6 @@ contract RehypothecationLogic is YoloStorage {
         usycCostBasisUSDC -= costPortion;
         usycQuantity -= _usycAmount;
         usycBalance = usycQuantity;
-
-        // Realize P&L to the anchor pool reserves
-        // if (usdcOut > costPortion) {
-        //     uint256 profit = usdcOut - costPortion;
-        //     totalAnchorReserveUSDC += profit; // LPs get the yield!
-        //     emit RehypothecationGain(profit);
-        // } else if (usdcOut < costPortion) {
-        //     uint256 loss = costPortion - usdcOut;
-        //     totalAnchorReserveUSDC = totalAnchorReserveUSDC > loss ? totalAnchorReserveUSDC - loss : 0;
-        //     emit RehypothecationLoss(loss);
-        // }
-        // USDC comes back ⇢ grow the reserve
-        totalAnchorReserveUSDC += usdcOut;
 
         // Emit P/L only for accounting transparency
         if (usdcOut > costPortion) {
@@ -136,10 +167,22 @@ contract RehypothecationLogic is YoloStorage {
 
         emit RehypothecationExecuted(false, _usycAmount, usdcOut);
 
+        // FIXED: Update reserve BEFORE push to maintain consistency
+        totalAnchorReserveUSDC += usdcOut;
+
         // Convert real USDC back to claim-tokens for consistent accounting
-        _pushRealUSDC(usdcOut);
+        _pushRealUSDC(usdcOut, inUnlockContext);
 
         return usdcOut;
+    }
+
+    /**
+     * @notice  Function to sell USYC and realize P&L
+     * @param   _usycAmount  Amount of USYC to sell
+     * @return  usdcOut      Amount of USDC received
+     */
+    function sellUSYC(uint256 _usycAmount) public returns (uint256 usdcOut) {
+        return _sellUSYC(_usycAmount, false);
     }
 
     /**
@@ -156,16 +199,20 @@ contract RehypothecationLogic is YoloStorage {
         uint256 C = usycBalance == 0 ? 0 : _previewUSDC(usycBalance);
 
         uint256 r = rehypothecationRatio; // basis-points (e.g. 7500 = 75 %)
-        uint256 numerator = (R * r) / PRECISION_DIVISOR > C ? (R * r) / PRECISION_DIVISOR - C : 0;
+        uint256 P = PRECISION_DIVISOR;
+
+        // x = (r·R − P·C)/(P + r)
+        uint256 numerator = (r * R) > (P * C) ? (r * R) - (P * C) : 0;
 
         if (numerator == 0) return; // already on or above target
 
-        // x = (r·R − C)/(1 + r)
-        uint256 denom = PRECISION_DIVISOR + r;
-        uint256 usdcToBuy = (numerator * PRECISION_DIVISOR) / denom;
+        uint256 denom = P + r;
+        uint256 usdcToBuy = numerator / denom;
 
+        // Cap by book reserves (which represents our claim tokens)
         if (usdcToBuy > totalAnchorReserveUSDC) usdcToBuy = totalAnchorReserveUSDC;
-        if (usdcToBuy > 0) buyUSYC(usdcToBuy);
+
+        if (usdcToBuy > 0) _buyUSYC(usdcToBuy, true);
     }
 
     // function handleRehypothecation(uint256 _usdcAmount) external {
@@ -251,9 +298,9 @@ contract RehypothecationLogic is YoloStorage {
     }
 
     /**
-     * @notice  Manually rebalance rehypothecation to target ratio
+     * @notice  Internal rebalance logic that assumes we're in correct unlock context
      */
-    function rebalanceRehypothecation() external {
+    function _rebalanceRehypothecation(bool inUnlockContext) internal {
         if (!rehypothecationEnabled) revert YoloHook__RehypothecationDisabled();
 
         uint256 R = totalAnchorReserveUSDC;
@@ -263,27 +310,36 @@ contract RehypothecationLogic is YoloStorage {
         uint256 denom = PRECISION_DIVISOR + r;
 
         // ideal C*  = r·R / (1 + r)
-        uint256 idealC = ((R * r) / PRECISION_DIVISOR) * PRECISION_DIVISOR / denom;
+        uint256 idealC = (R * r) / denom;
 
         if (C < idealC) {
             uint256 buyUSDC = idealC - C;
+
+            // Cap by book reserves
             if (buyUSDC > totalAnchorReserveUSDC) buyUSDC = totalAnchorReserveUSDC;
+
             if (buyUSDC > 0) {
-                _pullRealUSDC(buyUSDC);
-                uint256 got = usycTeller.buy(buyUSDC);
-                usycCostBasisUSDC += buyUSDC;
-                usycQuantity += got;
-                usycBalance = usycQuantity;
+                // buyUSYC already handles the pull and reserve update
+                uint256 got = _buyUSYC(buyUSDC, inUnlockContext);
                 emit RehypothecationRebalanced(true, buyUSDC, got);
             }
         } else if (C > idealC) {
             uint256 sellUSDCeq = C - idealC;
             uint256 usycToSell = (usycBalance * sellUSDCeq) / C;
             if (usycToSell > 0) {
-                uint256 got = sellUSYC(usycToSell);
+                uint256 got = _sellUSYC(usycToSell, inUnlockContext);
                 emit RehypothecationRebalanced(false, usycToSell, got);
             }
         }
+    }
+
+    /**
+     * @notice  Manually rebalance rehypothecation to target ratio
+     */
+    function rebalanceRehypothecation() external {
+        // When called externally, we need to wrap in an unlock
+        IPoolManager pm = IBaseHookView(address(this)).poolManager();
+        pm.unlock(abi.encode(CallbackData(5, abi.encode(0))));
     }
 
     // function rebalanceRehypothecation() external {
@@ -337,13 +393,16 @@ contract RehypothecationLogic is YoloStorage {
     // }
 
     /**
-     * @notice  Emergency withdrawal of all USYC
+     * @notice  Internal emergency withdrawal logic
      */
-    function emergencyWithdrawUSYC() external returns (uint256 usdcReceived, uint256 withdrawnAmount) {
+    function _emergencyWithdrawUSYC(bool inUnlockContext)
+        internal
+        returns (uint256 usdcReceived, uint256 withdrawnAmount)
+    {
         if (usycBalance == 0) return (0, 0);
 
         withdrawnAmount = usycBalance;
-        usdcReceived = sellUSYC(usycBalance);
+        usdcReceived = _sellUSYC(usycBalance, inUnlockContext);
 
         // Ensure everything is cleared
         usycBalance = 0;
@@ -352,6 +411,16 @@ contract RehypothecationLogic is YoloStorage {
 
         emit EmergencyUSYCWithdrawal(withdrawnAmount, usdcReceived);
         return (usdcReceived, withdrawnAmount);
+    }
+
+    /**
+     * @notice  Emergency withdrawal of all USYC
+     */
+    function emergencyWithdrawUSYC() external returns (uint256 usdcReceived, uint256 withdrawnAmount) {
+        // When called externally, we need to wrap in an unlock
+        IPoolManager pm = IBaseHookView(address(this)).poolManager();
+        bytes memory result = pm.unlock(abi.encode(CallbackData(6, abi.encode(0))));
+        return abi.decode(result, (uint256, uint256));
     }
 
     /// @dev helper – preview how much USDC we’d get for `usycAmt` USYC
