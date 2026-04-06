@@ -52,11 +52,7 @@ contract Test01_YoloHookFunctionality is
     address public wbtcAsset; // Collateral
     address public ptUsdeAsset; // Collateral
 
-    function setUp()
-        public
-        virtual
-        override(Base01_DeployUniswapV4Pool, Base03_DeployYoloAssetSettingsAndCollaterals)
-    {
+    function setUp() public virtual override(Base01_DeployUniswapV4Pool, Base03_DeployYoloAssetSettingsAndCollaterals) {
         // Set up the base contracts
         Base01_DeployUniswapV4Pool.setUp();
         Base03_DeployYoloAssetSettingsAndCollaterals.setUp();

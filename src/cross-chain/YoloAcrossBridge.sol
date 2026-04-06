@@ -251,7 +251,9 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         uint256, // _amount - not used for YoloAsset transfers
         address, // _relayer - not used
         bytes memory _message
-    ) external {
+    )
+        external
+    {
         // Only accept calls from the SpokePool
         if (msg.sender != address(spokePool)) {
             revert YoloAccrossBridge__UnauthorizedSender();

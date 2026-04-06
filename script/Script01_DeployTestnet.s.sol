@@ -21,8 +21,9 @@ import {PublicTransparentUpgradeableProxy} from "@yolo/contracts/proxy/PublicTra
 
 /*---------- IMPORT CONFIGS ----------*/
 import {Config01_OraclesAndAssets} from "@yolo/test/config/Config01_OraclesAndAssets.sol";
-import {Config02_AssetAndCollateralInitialization} from
-    "@yolo/test/config/Config02_AssetAndCollateralInitialization.sol";
+import {
+    Config02_AssetAndCollateralInitialization
+} from "@yolo/test/config/Config02_AssetAndCollateralInitialization.sol";
 
 /*---------- IMPORT LIBRARIES ----------*/
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
