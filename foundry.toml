@@ -7,4 +7,8 @@ optimizer_runs = 20
 via_ir = true
 ffi = false
 
+# Etherscan V2 API Configuration for Base Sepolia
+[etherscan]
+base_sepolia = { key = "${BASESCAN_API_KEY}", url = "https://api.etherscan.io/v2/api", chain = 84532 }
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

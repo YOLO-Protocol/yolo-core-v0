@@ -38,7 +38,7 @@ contract Config01_OraclesAndAssets {
         mockOraclesConfig.push(MockOracleConfig("USDT / USD", 1 * 1e8));
         mockOraclesConfig.push(MockOracleConfig("USDe / USD", 1 * 1e8));
         mockOraclesConfig.push(MockOracleConfig("WBTC / USD", 104_000 * 1e8));
-        mockOraclesConfig.push(MockOracleConfig("PT-sUSDe-31JUL2025 / USD", 2_600 * 1e8));
+        mockOraclesConfig.push(MockOracleConfig("PT-sUSDe-31JUL2025 / USD", 99440000 * 1e8));
         mockOraclesConfig.push(MockOracleConfig("wstETH / USD", 3_061_441_798_33));
         mockOraclesConfig.push(MockOracleConfig("WETH / USD", 2_600 * 1e8));
     }
